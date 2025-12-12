@@ -245,16 +245,45 @@ export default function RespondusApp() {
       .trim();
   };
 
+  const normalizeTFQuestion = (question) => {
+    if (question.type !== 'TF') return question;
+
+    // Find which answer should be correct by checking common true/false patterns
+    const correctAnswer = question.options?.find(opt => opt.isCorrect);
+    if (!correctAnswer) {
+      // Default to True if no correct answer found
+      return {
+        ...question,
+        options: [
+          { text: 'True', isCorrect: true },
+          { text: 'False', isCorrect: false }
+        ]
+      };
+    }
+
+    // Check if the correct answer indicates true or false
+    const correctText = correctAnswer.text?.toLowerCase().trim() || '';
+    const isTrue = correctText.includes('true') || correctText.includes('t') || correctText === 'yes' || correctText === '1';
+
+    return {
+      ...question,
+      options: [
+        { text: 'True', isCorrect: isTrue },
+        { text: 'False', isCorrect: !isTrue }
+      ]
+    };
+  };
+
   const extractTextFromFile = async (file) => {
     const fileType = file.name.split('.').pop().toLowerCase();
     let rawText = "";
-    
+
     if (fileType === 'docx') {
         if (!window.mammoth) return "Error: Docx parser not loaded.";
         const arrayBuffer = await file.arrayBuffer();
         const result = await window.mammoth.extractRawText({ arrayBuffer: arrayBuffer });
         rawText = result.value;
-    } 
+    }
     else if (fileType === 'pdf') {
         if (!window.pdfjsLib) return "Error: PDF parser not loaded.";
         const arrayBuffer = await file.arrayBuffer();
@@ -262,7 +291,7 @@ export default function RespondusApp() {
         for (let i = 1; i <= pdf.numPages; i++) {
             const page = await pdf.getPage(i);
             const textContent = await page.getTextContent();
-            const pageText = textContent.items.map(item => item.str).join(' '); 
+            const pageText = textContent.items.map(item => item.str).join(' ');
             rawText += pageText + "\n";
         }
     }
@@ -273,7 +302,7 @@ export default function RespondusApp() {
             reader.readAsText(file);
         });
     }
-    
+
     return normalizeText(rawText);
   };
 
@@ -366,13 +395,16 @@ export default function RespondusApp() {
              return;
         }
 
-        const parsedQuestions = parsedData.map(q => ({
-            ...q,
-            options: q.options || [],
-            pairs: q.pairs || [],
-            id: Date.now() + Math.random().toString(),
-            points: 1 
-        }));
+        const parsedQuestions = parsedData.map(q => {
+            const baseQuestion = {
+                ...q,
+                options: q.options || [],
+                pairs: q.pairs || [],
+                id: Date.now() + Math.random().toString(),
+                points: 1
+            };
+            return normalizeTFQuestion(baseQuestion);
+        });
         setQuestions([...questions, ...parsedQuestions]);
         setImportText('');
         setActiveTab('manual'); 
@@ -402,13 +434,16 @@ export default function RespondusApp() {
            return;
       }
 
-      const newQuestions = parsedData.map(q => ({
-        ...q,
-        options: q.options || [],
-        pairs: q.pairs || [],
-        id: Date.now() + Math.random().toString(),
-        points: Number(aiPoints)
-      }));
+      const newQuestions = parsedData.map(q => {
+        const baseQuestion = {
+          ...q,
+          options: q.options || [],
+          pairs: q.pairs || [],
+          id: Date.now() + Math.random().toString(),
+          points: Number(aiPoints)
+        };
+        return normalizeTFQuestion(baseQuestion);
+      });
       setQuestions([...questions, ...newQuestions]);
       setActiveTab('preview');
     } catch (err) {
@@ -473,13 +508,37 @@ export default function RespondusApp() {
                 renderBlock = `<response_str ident="${rID}" rcardinality="Single"><render_fib><response_label ident="${rID}_L" rshuffle="No"/></render_fib></response_str>`;
                 resProcessing = `<resprocessing><outcomes><decvar vartype="Integer" defaultval="0" varname="que_score" maxvalue="${q.points}"/></outcomes></resprocessing>`; 
             }
-            // Fill in Blank / Multiple Blanks / Multiple Dropdowns
-            else if (['F', 'FMB', 'MD'].includes(q.type)) {
+            // Fill in Blank (Single blank - no partial credit)
+            else if (q.type === 'F') {
                 renderBlock = `<response_str ident="${rID}" rcardinality="Single"><render_fib><response_label ident="${rID}_L" rshuffle="No"/></render_fib></response_str>`;
-                
-                const conditions = q.options.map(opt => 
+
+                const conditions = q.options.map(opt =>
                     `<respcondition><conditionvar><varequal respident="${rID}" case="No">${opt.text}</varequal></conditionvar><setvar varname="que_score" action="Set">${q.points}</setvar></respcondition>`
                 ).join('');
+                resProcessing = `<resprocessing><outcomes><decvar vartype="Integer" defaultval="0" varname="que_score" maxvalue="${q.points}"/></outcomes>${conditions}</resprocessing>`;
+            }
+            // Fill in Multiple Blanks / Multiple Dropdowns (Partial credit)
+            else if (['FMB', 'MD'].includes(q.type)) {
+                // Extract blanks from question text [blank1], [blank2], etc.
+                const blanks = q.text.match(/\[([^\]]+)\]/g) || [];
+                const numBlanks = blanks.length > 0 ? blanks.length : 1;
+                const pointsPerBlank = (q.points / numBlanks).toFixed(2);
+
+                // Create multiple response items, one for each blank
+                const responseItems = blanks.map((blank, idx) => {
+                    const blankID = `${rID}_B${idx + 1}`;
+                    return `<response_str ident="${blankID}" rcardinality="Single"><render_fib><response_label ident="${blankID}_L" rshuffle="No"/></render_fib></response_str>`;
+                }).join('');
+
+                renderBlock = responseItems || `<response_str ident="${rID}" rcardinality="Single"><render_fib><response_label ident="${rID}_L" rshuffle="No"/></render_fib></response_str>`;
+
+                // Create conditions for each blank - each blank worth partial credit
+                const conditions = blanks.map((blank, idx) => {
+                    const blankID = `${rID}_B${idx + 1}`;
+                    const blankAnswer = blank.replace(/[\[\]]/g, ''); // Extract answer from [answer]
+                    return `<respcondition><conditionvar><varequal respident="${blankID}" case="No">${blankAnswer}</varequal></conditionvar><setvar varname="que_score" action="Add">${pointsPerBlank}</setvar></respcondition>`;
+                }).join('');
+
                 resProcessing = `<resprocessing><outcomes><decvar vartype="Integer" defaultval="0" varname="que_score" maxvalue="${q.points}"/></outcomes>${conditions}</resprocessing>`;
             }
             // Matching
