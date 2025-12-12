@@ -70,6 +70,7 @@ export default function RespondusApp() {
   const [isImporting, setIsImporting] = useState(false);
   const [isReadingFile, setIsReadingFile] = useState(false);
   const [importTypes, setImportTypes] = useState(Object.keys(QUESTION_TYPES));
+  const [importPoints, setImportPoints] = useState(1);
 
   // -- Loading States --
   const [isRefining, setIsRefining] = useState(false);
@@ -401,7 +402,7 @@ export default function RespondusApp() {
                 options: q.options || [],
                 pairs: q.pairs || [],
                 id: Date.now() + Math.random().toString(),
-                points: 1
+                points: Number(importPoints)
             };
             return normalizeTFQuestion(baseQuestion);
         });
@@ -487,21 +488,21 @@ export default function RespondusApp() {
             } 
             // Multiple Response - Partial Credit
             else if (['MR'].includes(q.type)) {
-                const optionsXML = q.options.map((opt, optIdx) => 
+                const optionsXML = q.options.map((opt, optIdx) =>
                     `<response_label ident="${qID}_A${optIdx+1}"><material><mattext>${opt.text}</mattext></material></response_label>`
                 ).join('');
                 renderBlock = `<response_lid ident="${rID}" rcardinality="Multiple" rtiming="No"><render_choice>${optionsXML}</render_choice></response_lid>`;
-                
+
                 const correctOptions = q.options.filter(o => o.isCorrect).length;
-                const pointsPerCorrect = correctOptions > 0 ? (q.points / correctOptions).toFixed(2) : 0;
+                const pointsPerCorrect = correctOptions > 0 ? (q.points / correctOptions).toFixed(4) : 0;
 
                 const conditions = q.options.map((opt, optIdx) => {
                     // Add points for correct answers, do nothing (or could subtract) for incorrect
-                    const action = opt.isCorrect ? "Add" : "Add"; 
+                    const action = opt.isCorrect ? "Add" : "Add";
                     const score = opt.isCorrect ? pointsPerCorrect : 0;
                     return `<respcondition><conditionvar><varequal respident="${rID}">${qID}_A${optIdx+1}</varequal></conditionvar><setvar varname="que_score" action="${action}">${score}</setvar></respcondition>`;
                 }).join('');
-                resProcessing = `<resprocessing><outcomes><decvar vartype="Integer" defaultval="0" varname="que_score" maxvalue="${q.points}"/></outcomes>${conditions}</resprocessing>`;
+                resProcessing = `<resprocessing><outcomes><decvar vartype="Decimal" defaultval="0" varname="que_score" minvalue="0" maxvalue="${q.points}"/></outcomes>${conditions}</resprocessing>`;
             }
             // Essay
             else if (q.type === 'E') {
@@ -522,7 +523,7 @@ export default function RespondusApp() {
                 // Extract blanks from question text [blank1], [blank2], etc.
                 const blanks = q.text.match(/\[([^\]]+)\]/g) || [];
                 const numBlanks = blanks.length > 0 ? blanks.length : 1;
-                const pointsPerBlank = (q.points / numBlanks).toFixed(2);
+                const pointsPerBlank = (q.points / numBlanks).toFixed(4);
 
                 // Create multiple response items, one for each blank
                 const responseItems = blanks.map((blank, idx) => {
@@ -539,19 +540,32 @@ export default function RespondusApp() {
                     return `<respcondition><conditionvar><varequal respident="${blankID}" case="No">${blankAnswer}</varequal></conditionvar><setvar varname="que_score" action="Add">${pointsPerBlank}</setvar></respcondition>`;
                 }).join('');
 
-                resProcessing = `<resprocessing><outcomes><decvar vartype="Integer" defaultval="0" varname="que_score" maxvalue="${q.points}"/></outcomes>${conditions}</resprocessing>`;
+                resProcessing = `<resprocessing><outcomes><decvar vartype="Decimal" defaultval="0" varname="que_score" minvalue="0" maxvalue="${q.points}"/></outcomes>${conditions}</resprocessing>`;
             }
-            // Matching
+            // Matching - Partial Credit
             else if (q.type === 'MT') {
-                const rightSideChoices = q.pairs.map((p, idx) => 
-                    `<response_label ident="${qID}_R${idx}"><material><mattext>${p.right}</mattext></material></response_label>`
-                ).join('');
+                const numPairs = q.pairs.length;
+                const pointsPerPair = numPairs > 0 ? (q.points / numPairs).toFixed(4) : 0;
 
-                renderBlock = `<response_lid ident="${rID}" rcardinality="Multiple" rtiming="No"><render_choice shuffle="Yes">${rightSideChoices}</render_choice></response_lid>`;
-                
-                const pairsText = q.pairs.map(p => `${p.left} -> ${p.right}`).join(', ');
-                renderBlock = `<material><mattext>Match the following:\n\n${q.pairs.map(p => p.left).join('\n')}\n\n(Choices: ${q.pairs.map(p => p.right).join(', ')})</mattext></material><response_str ident="${rID}" rcardinality="Single"><render_fib><response_label ident="${rID}_L"/></render_fib></response_str>`;
-                resProcessing = `<resprocessing><outcomes><decvar vartype="Integer" defaultval="0" varname="que_score" maxvalue="${q.points}"/></outcomes></resprocessing>`;
+                // Create separate response items for each left-side item
+                const responseItems = q.pairs.map((pair, idx) => {
+                    const pairID = `${rID}_P${idx + 1}`;
+                    const choicesXML = q.pairs.map((p, cIdx) =>
+                        `<response_label ident="${qID}_R${cIdx}"><material><mattext>${p.right}</mattext></material></response_label>`
+                    ).join('');
+                    return `<material><mattext>${pair.left}</mattext></material><response_lid ident="${pairID}" rcardinality="Single"><render_choice>${choicesXML}</render_choice></response_lid>`;
+                }).join('');
+
+                renderBlock = responseItems;
+
+                // Create conditions for each pair - partial credit
+                const conditions = q.pairs.map((pair, idx) => {
+                    const pairID = `${rID}_P${idx + 1}`;
+                    const correctChoice = `${qID}_R${idx}`;
+                    return `<respcondition><conditionvar><varequal respident="${pairID}">${correctChoice}</varequal></conditionvar><setvar varname="que_score" action="Add">${pointsPerPair}</setvar></respcondition>`;
+                }).join('');
+
+                resProcessing = `<resprocessing><outcomes><decvar vartype="Decimal" defaultval="0" varname="que_score" minvalue="0" maxvalue="${q.points}"/></outcomes>${conditions}</resprocessing>`;
             }
 
             return `<item title="Question ${i+1}" ident="${qID}"><presentation><material><mattext texttype="text/html"><![CDATA[${q.text}]]></mattext></material>${renderBlock}</presentation>${resProcessing}</item>`;
@@ -707,6 +721,7 @@ export default function RespondusApp() {
                         <div className="flex items-center gap-2 mb-4"><FileUp className="w-6 h-6 text-orange-600" /><h2 className="text-lg font-bold text-orange-900">Import Questions</h2></div>
                         <div className="mb-4"><label className="block text-xs font-bold text-orange-800 uppercase mb-1">Test Bank Name</label><input type="text" value={testBankName} onChange={(e) => setTestBankName(e.target.value)} placeholder="Midterm_Exam" className="w-full p-2 border border-orange-200 rounded-md font-medium" /></div>
                         <div className="mb-4"><label className="block text-xs font-bold text-orange-800 uppercase mb-2">Select Types to Import</label><div className="grid grid-cols-2 gap-2">{Object.values(QUESTION_TYPES).map(t => (<label key={t.code} className="flex items-center gap-2 text-sm text-orange-900 cursor-pointer"><input type="checkbox" checked={importTypes.includes(t.code)} onChange={() => handleImportTypeChange(t.code)} className="rounded text-orange-600 focus:ring-orange-500" />{t.label}</label>))}</div></div>
+                        <div className="mb-4"><label className="block text-xs font-bold text-orange-800 uppercase mb-1">Default Points per Question</label><input type="number" min="0" step="0.1" value={importPoints} onChange={(e) => setImportPoints(e.target.value)} className="w-24 p-2 border border-orange-200 rounded-md" /></div>
                         <div className="space-y-4">
                             <div><label className="block text-xs font-bold text-orange-800 uppercase mb-1">Paste Quiz Text</label><textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="1. Question..." className="w-full p-3 border border-orange-200 rounded-md h-48 text-sm font-mono" /></div>
                             <div className="flex items-center gap-2">
